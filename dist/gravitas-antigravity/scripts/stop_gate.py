@@ -24,12 +24,16 @@ from gravitas_evidence import criterion_states, evidence_deficit, is_fresh, owne
 #: unverified (decision allow + unverified:true), never a false PASS.
 
 
-def load_contract(session_dir: Path) -> dict:
+def load_contract(session_dir: Path) -> dict | None:
     contract_path = session_dir / "contract.json"
-    if contract_path.exists():
+    if not contract_path.exists():
+        return None
+    try:
         with open(contract_path) as f:
-            return json.load(f)
-    return {}
+            contract = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return contract if isinstance(contract, dict) else None
 
 
 def load_evidence(session_dir: Path) -> list:
@@ -117,6 +121,19 @@ def main():
         return
 
     contract = load_contract(session_dir)
+    if contract is None:
+        reason = "Completion gate: contract is missing or invalid; cannot verify completion"
+        record_stop_gate_cycle(session_dir, "continue", reason)
+        print(json.dumps({"decision": "continue", "reason": reason}))
+        return
+
+    acceptance_criteria = contract.get("acceptance_criteria")
+    if not isinstance(acceptance_criteria, list) or not acceptance_criteria:
+        reason = "Completion gate: contract declares no acceptance criteria; define what done means before stopping"
+        record_stop_gate_cycle(session_dir, "continue", reason)
+        print(json.dumps({"decision": "continue", "reason": reason}))
+        return
+
     evidence = load_evidence(session_dir)
     state = load_state(session_dir)
     failures = load_failures(session_dir)
@@ -158,7 +175,6 @@ def main():
     # (written before the final mutation), SUPPORTED, FAIL, BLOCKED, and
     # UNVERIFIABLE all block with the deficit action attached.
     states = criterion_states(contract, evidence)
-    acceptance_criteria = contract.get("acceptance_criteria", [])
     deficit = {item["criterion"]: item for item in evidence_deficit(contract, states)}
     uncovered = []
     for index, criterion in enumerate(acceptance_criteria, 1):
