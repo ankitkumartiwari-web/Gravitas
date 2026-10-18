@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from gravitas_action import antigravity_envelope, workspace_roots
+from gravitas_action import antigravity_envelope, canonical_path, workspace_roots
 from gravitas_policy import (
     MODE_ALIASES,
     MODES,
@@ -107,7 +107,7 @@ def main():
 
     if action.kind == "write" and not session_dir:
         target = action.paths[0] if action.paths else ""
-        if target and Path(target).resolve(strict=False).exists():
+        if target and canonical_path(target, workspace_roots(envelope)).exists():
             deny("Read-before-write violation: no Gravitas session has recorded a read of this existing file.")
             return
 

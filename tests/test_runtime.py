@@ -160,7 +160,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {})
         entries = [json.loads(line) for line in (session / "evidence.jsonl").read_text().splitlines()]
         self.assertEqual(entries[-1]["source"], "read")
-        self.assertEqual(entries[-1]["file"], str(target))
+        self.assertEqual(entries[-1]["file"], str(target.resolve()))
         schema = json.loads((ROOT / "schemas/evidence.schema.json").read_text())
         Draft7Validator(schema).validate(entries[-1])
 

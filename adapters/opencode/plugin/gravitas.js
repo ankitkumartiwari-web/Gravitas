@@ -19,6 +19,13 @@
  * with missing arguments are denied locally without consulting the guard.
  * The shim never shells to itself (it invokes `gravitas guard` only).
  *
+ * Path identity: file paths are forwarded verbatim and canonicalized by
+ * the guard (realpath + volume-aware case/Unicode folding, see
+ * canonical_path/path_key in gravitas_action.py). Do not normalize here:
+ * a lexical `..` collapse ignores symlinks, and NFC/lowercase folding
+ * names a different file on Linux, so either would let an out-of-scope
+ * write look in-scope.
+ *
  * Requires `gravitas` (pip install gravitas) and python3 on PATH.
  */
 
