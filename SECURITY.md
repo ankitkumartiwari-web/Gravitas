@@ -59,9 +59,11 @@ runtime checks, not as containment.
   If the host executes outside the hook flow, Gravitas cannot see it.
 - Secret safety of files the agent legitimately reads (`.env` contents
   still enter model context; only ledger persistence is redacted/flagged).
-- Ledger tamper-proofing. The hash chain is tamper-*evident*
-  (`gravitas verify` detects edits); anyone with filesystem access can
-  rewrite history and the rewrite will show.
+- Ledger integrity. The hash chain is tamper-evident; `gravitas verify` and
+  the stop gate also compare its head against a monotonic anchor stored in the
+  user-level `~/.gravitas/anchors/` directory. This detects a project-ledger
+  rewrite or truncation when the anchor directory remains outside the
+  attacker-controlled write scope.
 
 ## Threat Model (tested)
 
@@ -69,3 +71,8 @@ See `tests/test_action_security.py`: bypass corpus (substitution,
 pipes, redirection, `sed -i`, `tee`, `curl|sh`, `find -exec`, infra
 CLIs), monotonic-escalation fuzzing (2,500 seeded cases), scope escape
 (symlink/traversal), runner confinement, and sensitive-read flagging.
+
+The local head anchor does not protect against an attacker who can also modify
+the current user's home directory, replace the runtime, or run arbitrary code
+as that user. It is not a signature, remote transparency log, or protection
+against a compromised host; those require a separately trusted anchor.

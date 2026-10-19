@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from session_context import session_dir_for_payload
-from evidence_chain import append_evidence
+from evidence_chain import append_evidence, resolution_links
 from gravitas_action import (
     READ_TOOLS,
     WRITE_TOOLS,
@@ -121,6 +121,7 @@ def main():
                 "source": "read",
                 "file": str(canonical_path(target, roots)),
                 "timestamp": timestamp,
+                "resolution_ids": resolution_links(session_dir, source="read", file=target),
                 **({"sensitive": True} if is_sensitive_path(target) else {}),
             })
 

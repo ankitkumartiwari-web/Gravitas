@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from evidence_chain import append_evidence, sha256
+from evidence_chain import append_evidence, resolution_links, sha256
 from gravitas_action import confine_cwd
 
 #: Default wall-clock bound per validator execution (seconds).
@@ -129,6 +129,9 @@ def main() -> int:
         "source": "validator",
         "validator_id": args.validator_id,
         "criterion_ids": args.criterion_id,
+        "resolution_ids": resolution_links(
+            session_dir, source="validator", criterion_ids=args.criterion_id
+        ),
         "command": command,
         "command_sha256": sha256(command),
         "exit_code": rc,

@@ -1,11 +1,13 @@
 """V5 hardening regressions: enforcement fail-closed, classifier, evidence, init, packaging."""
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "plugins/gravitas-antigravity/scripts"
@@ -14,6 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import test_runtime
 from gravitas_action import classify_shell
+from evidence_chain import append_evidence, anchor_path, canonical_json, sha256, verify_with_anchor
 from gravitas_init import _copy_tree, init_opencode
 
 
@@ -208,6 +211,61 @@ class EvidenceV5Tests(unittest.TestCase):
         gate = json.loads(test_runtime.run_script("stop_gate.py", {}, cwd=self.cwd).stdout)
         self.assertEqual(gate["decision"], "continue")
         self.assertIn("chain", gate["reason"])
+
+    def test_user_anchor_detects_rewritten_chain_and_truncation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = root / ".gravitas" / "sessions" / "task"
+            home = root / "private-home"
+            session.mkdir(parents=True)
+            with patch.dict(
+                os.environ, {"HOME": str(home), "USERPROFILE": str(home)}
+            ):
+                first = append_evidence(session, {"source": "read", "file": "a.py"})
+                second = append_evidence(session, {"source": "read", "file": "b.py"})
+                ledger = session / "evidence.jsonl"
+                original = ledger.read_text(encoding="utf-8")
+                self.assertEqual(verify_with_anchor(session), (True, "chain valid; ledger head anchored"))
+
+                forged = {
+                    "source": "validator", "timestamp": "2026-10-19T00:00:00+00:00",
+                    "previous_event_hash": None,
+                }
+                forged["event_hash"] = sha256(forged)
+                ledger.write_text(canonical_json(forged) + "\n", encoding="utf-8")
+                self.assertFalse(verify_with_anchor(session)[0])
+
+                ledger.write_text(original, encoding="utf-8")
+                anchors = anchor_path(session)
+                anchor_lines = anchors.read_text(encoding="utf-8").splitlines()
+                anchors.write_text(anchor_lines[0] + "\n", encoding="utf-8")
+                valid, reason = verify_with_anchor(session)
+                self.assertFalse(valid)
+                self.assertIn("not anchored", reason)
+                self.assertNotEqual(first["event_hash"], second["event_hash"])
+
+    def test_stop_gate_rejects_self_consistent_unanchored_rewrite(self):
+        command = [sys.executable, "-c", "pass"]
+        session = self.init({"mode": "implement", "objective": "x",
+                             "acceptance_criteria": [{"id": "AC1", "statement": "y"}],
+                             "validators": [{"id": "u", "command": command,
+                                             "criterion_ids": ["AC1"]}]})
+        run = test_runtime.run_script(
+            "validator_runner.py", None, "--session-dir", str(session),
+            "--validator-id", "u", "--criterion-id", "AC1",
+            "--", *command, cwd=self.cwd)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        forged = {
+            "source": "validator", "validator_id": "u", "criterion_ids": ["AC1"],
+            "command": command, "command_sha256": sha256(command), "exit_code": 0,
+            "verdict": "PASS", "timestamp": "2026-10-19T00:00:00+00:00",
+            "previous_event_hash": None,
+        }
+        forged["event_hash"] = sha256(forged)
+        (session / "evidence.jsonl").write_text(canonical_json(forged) + "\n")
+        gate = json.loads(test_runtime.run_script("stop_gate.py", {}, cwd=self.cwd).stdout)
+        self.assertEqual(gate["decision"], "continue")
+        self.assertIn("anchor", gate["reason"])
 
     def test_validator_timeout_records_fail(self):
         command = [sys.executable, "-c", "import time; time.sleep(30)"]

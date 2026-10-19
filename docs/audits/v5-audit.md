@@ -83,7 +83,7 @@ Prior fixes verified present: PR #1 (shell injection), PR #2 squash 297a613 (unp
 
 ## Remaining limitations (honest)
 - Shell classifier is not filesystem containment; quoted-separator splitting is regex-based (fail-closed noisy, e.g. `echo "a;b"` → mutation); heredoc bodies mis-split safe-side. OS/host isolation still required for true containment.
-- Hash chains are tamper-evident, not tamper-proof against full-ledger rewrite.
+- User-local anchors detect project-ledger rewrites only while the anchor directory remains outside the attacker-controlled write scope; they do not resist a same-user process that can rewrite both locations.
 - Scope gating covers enumerable paths only; TOCTOU races documented in policy.
 - Opencode read-before-write ledger is per-call (`reads=set()`); existing-file writes via shim deny until session read-tracking exists — surfaced as explicit reason.
 - No breaking changes; no version bump; "V5" remains upgrade direction, not a release designation.
