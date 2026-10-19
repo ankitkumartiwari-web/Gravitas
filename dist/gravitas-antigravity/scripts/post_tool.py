@@ -23,8 +23,10 @@ from gravitas_action import (
     READ_TOOLS,
     WRITE_TOOLS,
     antigravity_envelope,
+    canonical_path,
     classify_shell,
     target_file,
+    workspace_roots,
 )
 
 
@@ -109,13 +111,15 @@ def main():
     session_dir = session_dir_for_payload(payload, create=True)
     fingerprint = action_fingerprint(tool_name, tool_input)
 
-    # Record file reads for read-before-write enforcement
+    # Record file reads for read-before-write enforcement. The stored path is
+    # canonical (absolute, realpath-resolved) so later compares are stable.
     if tool_name in READ_TOOLS:
         target = target_file(tool_name, tool_input)
         if target:
+            roots = workspace_roots(antigravity_envelope(payload)[0])
             append_evidence(session_dir, {
                 "source": "read",
-                "file": target,
+                "file": str(canonical_path(target, roots)),
                 "timestamp": timestamp,
                 **({"sensitive": True} if is_sensitive_path(target) else {}),
             })
