@@ -1,0 +1,80 @@
+name: Sync Contributors
+
+# Keeps the README wall + CONTRIBUTORS.md updated as new contributors land.
+# Needs a one-time secret: CONTRIBUTORS_SYNC_TOKEN — a fine-grained PAT with
+# Contents: read+write and Pull requests: write on this repo (classic PAT with
+# `repo` scope also works). The PAT matters: PRs opened with it trigger CI
+# normally, so the sync PR can auto-merge on green. (PRs opened with the
+# default GITHUB_TOKEN never trigger workflows and could never merge.)
+#
+# Setup: gh secret set CONTRIBUTORS_SYNC_TOKEN
+# Then runs automatically on every push to main, weekly, or on demand.
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-contributors
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check for secret
+        run: |
+          if [ -z "${{ secrets.CONTRIBUTORS_SYNC_TOKEN }}" ]; then
+            echo "::error::CONTRIBUTORS_SYNC_TOKEN secret is missing. Create a fine-grained PAT (Contents: write, Pull requests: write) and add it via: gh secret set CONTRIBUTORS_SYNC_TOKEN"
+            exit 1
+          fi
+
+      - name: Sync contributor files
+        env:
+          GH_TOKEN: ${{ secrets.CONTRIBUTORS_SYNC_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          python scripts/sync_contributors.py --owner "$GITHUB_REPOSITORY_OWNER" --repo "${GITHUB_REPOSITORY#*/}" --token "$GH_TOKEN" --check && echo "IN_SYNC=1" >> "$GITHUB_ENV" || echo "IN_SYNC=0" >> "$GITHUB_ENV"
+          if [ "$IN_SYNC" = "0" ]; then
+            python scripts/sync_contributors.py --owner "$GITHUB_REPOSITORY_OWNER" --repo "${GITHUB_REPOSITORY#*/}" --token "$GH_TOKEN"
+          fi
+
+      - name: Skip if an update PR is already open
+        if: env.IN_SYNC == '0'
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.CONTRIBUTORS_SYNC_TOKEN }}
+        run: |
+          open=$(gh pr list --head chore/sync-contributors --json number --jq length)
+          echo "already_open=$open" >> "$GITHUB_OUTPUT"
+
+      - name: Open update PR (auto-merges on green)
+        if: env.IN_SYNC == '0' && steps.gate.outputs.already_open == '0'
+        env:
+          GH_TOKEN: ${{ secrets.CONTRIBUTORS_SYNC_TOKEN }}
+        run: |
+          git config user.name "gravitas-contrib-bot"
+          git config user.email "gravitas-contrib-bot@users.noreply.github.com"
+          git checkout -b chore/sync-contributors
+          git add README.md CONTRIBUTORS.md
+          git commit -m "chore(contributors): sync wall for new contributors" -m "Automated by Sync Contributors workflow." || exit 0
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease origin chore/sync-contributors
+          gh pr create --title "chore(contributors): sync wall for new contributors" \
+            --body "Automated contributor-wall sync. Existing entries untouched; newcomers appended with PR-number credits. Verify the wall renders, then this PR auto-merges on green CI." \
+            --base main --head chore/sync-contributors
+          gh pr merge --auto --merge chore/sync-contributors
