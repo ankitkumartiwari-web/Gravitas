@@ -122,10 +122,18 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     target = Path(args.session_dir) / "evidence.jsonl"
     try:
-        from evidence_chain import verify_with_anchor
+        from evidence_chain import backfill_anchors, verify_with_anchor
     except ModuleNotFoundError:
         print(json.dumps({"valid": False, "reason": f"runtime assets not found under {ROOT}; reinstall gravitas or run from a checkout", "ledger": str(target)}))
         return 1
+    if args.backfill_anchors:
+        ok, detail = backfill_anchors(Path(args.session_dir))
+        if not ok:
+            print(json.dumps({"valid": False, "backfilled": False, "reason": detail, "ledger": str(target)}))
+            return 1
+        valid, reason = verify_with_anchor(Path(args.session_dir))
+        print(json.dumps({"valid": valid, "backfilled": True, "reason": reason, "ledger": str(target)}))
+        return 0 if valid else 1
     valid, reason = verify_with_anchor(Path(args.session_dir))
     print(json.dumps({"valid": valid, "reason": reason, "ledger": str(target)}))
     return 0 if valid else 1
@@ -344,8 +352,10 @@ def cmd_resolve_failure(args: argparse.Namespace) -> int:
         "required_reads": target_files,
         "criterion_ids": sorted(criterion_ids),
     }
-    with failures_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(marker) + "\n")
+    # Ledger-first ordering: the anchored evidence record must exist before
+    # its failure-log marker. If anchoring the record fails, no marker is
+    # written, so verification can never see an orphan "resolution metadata
+    # is not anchored" deficit.
     try:
         from evidence_chain import append_evidence
         append_evidence(session_dir, {
@@ -360,6 +370,8 @@ def cmd_resolve_failure(args: argparse.Namespace) -> int:
     except (ModuleNotFoundError, OSError, ValueError) as error:
         print(json.dumps({"ok": False, "error": f"resolution marker could not be anchored: {error}"}))
         return 1
+    with failures_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(marker) + "\n")
     print(json.dumps({"ok": True, "fingerprint": args.fingerprint,
                       "resolution_id": resolution_id,
                       "required_reads": target_files,
@@ -690,7 +702,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="subcommand", required=True)
     sub.add_parser("doctor").set_defaults(func=cmd_doctor)
     sub.add_parser("status").set_defaults(func=cmd_status)
-    verify = sub.add_parser("verify"); verify.add_argument("--session-dir", required=True); verify.set_defaults(func=cmd_verify)
+    verify = sub.add_parser("verify"); verify.add_argument("--session-dir", required=True); verify.add_argument("--backfill-anchors", action="store_true", help="anchor the current head of a pre-existing ledger, then verify"); verify.set_defaults(func=cmd_verify)
     gc = sub.add_parser("gc"); gc.add_argument("--older-than-days", type=int, default=30); gc.add_argument("--apply", action="store_true", help="delete instead of reporting"); gc.set_defaults(func=cmd_gc)
     validator = sub.add_parser("validator"); validator.add_argument("--session-dir", required=True); validator.add_argument("--validator-id", required=True); validator.add_argument("--criterion-id", action="append", default=[]); validator.add_argument("command", nargs=argparse.REMAINDER); validator.set_defaults(func=cmd_validator)
     decide = sub.add_parser("decide", help="Emit a planning-policy record (planning, context/verification depth, delegation, reason codes) from --signals JSON")

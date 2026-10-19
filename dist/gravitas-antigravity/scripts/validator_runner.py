@@ -143,7 +143,16 @@ def main() -> int:
         "verdict": verdict,
         **git_snapshot(cwd),
     }
-    saved = append_evidence(session_dir, record)
+    try:
+        saved = append_evidence(session_dir, record)
+    except (OSError, ValueError) as error:
+        # The validator ran; only its evidence record was lost. Report the
+        # loss explicitly (fail-closed: the gate requires the ledger entry)
+        # instead of dying with a traceback that breaks the JSON protocol.
+        print(json.dumps({"verdict": verdict, "exit_code": rc,
+                          "timed_out": timed_out,
+                          "evidence_error": f"evidence append failed: {error}"}))
+        return 1
     print(json.dumps({"verdict": saved["verdict"], "exit_code": rc,
                       "timed_out": timed_out, "event_hash": saved["event_hash"]}))
     return rc if not timed_out else 124

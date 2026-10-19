@@ -25,6 +25,8 @@
     "fingerprint": {"type": "string"},
     "phase": {"type": "string", "description": "Reproduction phase: before (failing evidence) or after (fix verification)."},
     "sensitive": {"type": "boolean", "description": "Read touched a likely secret-bearing file; treat retained content accordingly."},
+    "anchor_pending": {"type": "boolean", "description": "Ledger entry written while the user-local anchor store was unavailable; verification treats it as a fail-closed deficit until a later anchor covers it."},
+    "anchor_error": {"type": "string", "description": "Anchor-store failure that caused anchor_pending to be set."},
     "reason": {"type": "string", "description": "Why reproduction is impossible (UNVERIFIABLE records)."},
     "exit_code": {"type": "integer"},
     "command_sha256": {"type": "string"},

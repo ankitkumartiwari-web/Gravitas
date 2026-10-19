@@ -64,6 +64,12 @@ runtime checks, not as containment.
   user-level `~/.gravitas/anchors/` directory. This detects a project-ledger
   rewrite or truncation when the anchor directory remains outside the
   attacker-controlled write scope.
+- Anchor upgrades. Ledgers written before anchoring fail verification with
+  "ledger head not anchored"; anchor a trusted ledger with
+  `gravitas verify --backfill-anchors --session-dir <dir>` (see
+  `skills/gravitas/references/recovery.md`). A broken anchor store never
+  bypasses the gate: affected entries are flagged `anchor_pending` and
+  verification stays fail-closed until the head is anchored.
 
 ## Threat Model (tested)
 

@@ -60,6 +60,62 @@ def _anchor_records(path: Path, session_key: str) -> tuple[list[dict], str | Non
     return _parse_anchor_records(path.read_text(encoding="utf-8"), session_key)
 
 
+#: Upgrade hint embedded in the unanchored-head deficit so pre-anchor
+#: ledgers get a migration path instead of a bare failure.
+BACKFILL_COMMAND = "gravitas verify --backfill-anchors --session-dir <session-dir>"
+
+
+def _hashed_entries(ledger_path: Path) -> list[dict]:
+    """Load ledger records that carry an event hash; skip anything else."""
+    entries = []
+    if not ledger_path.exists():
+        return entries
+    with ledger_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and isinstance(entry.get("event_hash"), str):
+                entries.append(entry)
+    return entries
+
+
+def _mark_anchor_pending(path: Path, event_hash: str, error: str) -> dict | None:
+    """Flag the just-appended record when its anchor write failed.
+
+    The ledger entry is already durable; rewriting its last line to carry
+    ``anchor_pending: true`` keeps the failure visible to verification
+    (fail-closed) without raising into hook/validator callers. The hash is
+    recomputed over the flagged record so the chain stays internally valid.
+    Returns the patched record, or None when the patch itself failed.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    index = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    if index is None:
+        return None
+    try:
+        record = json.loads(lines[index])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict) or record.get("event_hash") != event_hash:
+        # Another process appended after us; leave its record untouched.
+        return None
+    record["anchor_pending"] = True
+    record["anchor_error"] = error[:200]
+    record.pop("event_hash", None)
+    record["event_hash"] = sha256(record)
+    lines[index] = canonical_json(record)
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return record
+
+
 def _append_anchor(session_dir: Path, ledger_head: str) -> None:
     key = _session_key(session_dir)
     path = anchor_path(session_dir)
@@ -230,7 +286,14 @@ def _last_event_hash(path: Path) -> str | None:
 
 
 def append_evidence(session_dir: Path, entry: dict) -> dict:
-    """Atomically append a timestamped, hash-linked record on POSIX hosts."""
+    """Atomically append a timestamped, hash-linked record on POSIX hosts.
+
+    The ledger append is durable first; the user-local anchor follows. An
+    anchor-store failure (read-only home, unsecurable directory, corrupt
+    anchor file) never raises: the entry is flagged ``anchor_pending`` so
+    verification and the stop gate stay fail-closed while hooks keep
+    running without tracebacks.
+    """
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "evidence.jsonl"
     path.touch(exist_ok=True)
@@ -254,7 +317,12 @@ def append_evidence(session_dir: Path, entry: dict) -> dict:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except (NameError, OSError):
             pass
-    _append_anchor(session_dir, record["event_hash"])
+    try:
+        _append_anchor(session_dir, record["event_hash"])
+    except (OSError, ValueError) as error:
+        patched = _mark_anchor_pending(path, record["event_hash"], str(error))
+        if patched is not None:
+            return patched
     return record
 
 
@@ -282,28 +350,38 @@ def verify_chain(path: Path) -> tuple[bool, str]:
 
 
 def verify_with_anchor(session_dir: Path) -> tuple[bool, str]:
-    """Require every externally anchored head and the current ledger head to match."""
+    """Require every externally anchored head and the current ledger head to match.
+
+    Fail-closed throughout: a broken anchor store, a pending anchor, or an
+    unanchored head all report a deficit (never a traceback), so breaking
+    the anchor directory blocks completion instead of allowing it. Pending
+    flags covered by a later anchor need no deficit: the hash chain commits
+    the whole prefix to the anchored head.
+    """
     ledger_path = session_dir / "evidence.jsonl"
     valid, reason = verify_chain(ledger_path)
     if not valid:
         return valid, reason
 
-    ledger_heads = []
-    if ledger_path.exists():
-        with ledger_path.open(encoding="utf-8") as handle:
-            for line in handle:
-                entry = json.loads(line)
-                if isinstance(entry, dict) and isinstance(entry.get("event_hash"), str):
-                    ledger_heads.append(entry["event_hash"])
-    if not ledger_heads:
+    entries = _hashed_entries(ledger_path)
+    if not entries:
         return True, "no anchored evidence"
 
+    ledger_heads = [entry["event_hash"] for entry in entries]
     key = _session_key(session_dir)
-    anchors, error = _anchor_records(anchor_path(session_dir), key)
+    try:
+        anchors, error = _anchor_records(anchor_path(session_dir), key)
+    except OSError as error:
+        return False, (f"anchor store unreadable ({error}); completion blocked "
+                       "until the anchor directory is readable again")
     if error:
         return False, error
     if not anchors:
-        return False, "ledger head not anchored"
+        if any(entry.get("anchor_pending") for entry in entries):
+            return False, ("anchor pending — the anchor store write failed; "
+                           "re-run verify once the anchor directory is writable")
+        return False, ("ledger head not anchored — this ledger predates anchoring; "
+                       f"run `{BACKFILL_COMMAND}` on this trusted ledger to anchor its head")
     head_index = 0
     for anchor in anchors:
         try:
@@ -311,5 +389,43 @@ def verify_with_anchor(session_dir: Path) -> tuple[bool, str]:
         except ValueError:
             return False, "anchored head missing from evidence ledger"
     if anchors[-1]["ledger_head"] != ledger_heads[-1]:
-        return False, "ledger head not anchored"
+        tail = entries[head_index:]
+        if any(entry.get("anchor_pending") for entry in tail):
+            return False, ("anchor pending — the anchor store write failed; "
+                           "re-run verify once the anchor directory is writable")
+        return False, "ledger head not anchored (latest anchor does not match the ledger head)"
+    return True, "chain valid; ledger head anchored"
+
+
+def backfill_anchors(session_dir: Path) -> tuple[bool, str]:
+    """Anchor the current head of a pre-existing ledger into the local chain.
+
+    Upgrade path for ledgers written before anchoring existed: verify the
+    hash chain, then append an anchor for the current head. Only run this
+    on a ledger you trust — anchoring legitimizes whatever the head
+    commits to. A broken chain or a corrupt anchor chain refuses
+    (fail-closed) instead of resetting history.
+    """
+    ledger_path = session_dir / "evidence.jsonl"
+    valid, reason = verify_chain(ledger_path)
+    if not valid:
+        return False, reason
+    entries = _hashed_entries(ledger_path)
+    if not entries:
+        return True, "no anchored evidence"
+    key = _session_key(session_dir)
+    try:
+        anchors, error = _anchor_records(anchor_path(session_dir), key)
+    except OSError as error:
+        return False, (f"anchor store unreadable ({error}); completion blocked "
+                       "until the anchor directory is readable again")
+    if error:
+        return False, error
+    if anchors and anchors[-1]["ledger_head"] == entries[-1]["event_hash"]:
+        return True, "chain valid; ledger head anchored"
+    try:
+        _append_anchor(session_dir, entries[-1]["event_hash"])
+    except (OSError, ValueError) as error:
+        return False, (f"anchor backfill failed ({error}); "
+                       "re-run once the anchor directory is writable")
     return True, "chain valid; ledger head anchored"
