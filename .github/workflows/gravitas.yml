@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:  # lets the contributor-sync bot trigger CI on its own PRs
 
 jobs:
   gravitas-verify:
