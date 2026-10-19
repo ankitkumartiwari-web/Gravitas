@@ -7,21 +7,30 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft7Validator, ValidationError
 
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "plugins/gravitas-antigravity/scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 
 def run_script(name, payload=None, *args, cwd):
+    env = os.environ.copy()
+    isolated_home = str(Path(cwd) / ".test-user-home")
+    env["HOME"] = isolated_home
+    if os.name == "nt":
+        env["USERPROFILE"] = isolated_home
     return subprocess.run(
         [sys.executable, str(SCRIPTS / name), *args],
         input=json.dumps(payload) if payload is not None else None,
         text=True,
         capture_output=True,
         cwd=cwd,
+        env=env,
         check=False,
     )
 
@@ -279,10 +288,12 @@ class RuntimeTests(unittest.TestCase):
             "timestamp": "2999-01-01T00:00:00+00:00",
             "previous_event_hash": None,
         }
-        forged["event_hash"] = hashlib.sha256(
-            json.dumps(forged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ).hexdigest()
-        (session / "evidence.jsonl").write_text(json.dumps(forged) + "\n")
+        from evidence_chain import append_evidence
+        with patch.dict(
+            os.environ, {"HOME": str(self.cwd / ".test-user-home"),
+                         "USERPROFILE": str(self.cwd / ".test-user-home")}
+        ):
+            append_evidence(session, forged)
 
         gate = json.loads(run_script("stop_gate.py", {}, cwd=self.cwd).stdout)
         self.assertEqual(gate["decision"], "continue")
@@ -297,7 +308,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         ledger = session / "evidence.jsonl"
         ledger.write_text(ledger.read_text().replace('"exit_code":0', '"exit_code":1'))
-        cli = subprocess.run([sys.executable, str(ROOT / "gravitas_cli.py"), "verify", "--session-dir", str(session)], text=True, capture_output=True, cwd=self.cwd, check=False)
+        env = os.environ.copy()
+        isolated_home = str(self.cwd / ".test-user-home")
+        env["HOME"] = isolated_home
+        if os.name == "nt":
+            env["USERPROFILE"] = isolated_home
+        cli = subprocess.run([sys.executable, str(ROOT / "gravitas_cli.py"), "verify", "--session-dir", str(session)], text=True, capture_output=True, cwd=self.cwd, env=env, check=False)
         self.assertNotEqual(cli.returncode, 0)
 
     def test_validator_runner_rejects_undeclared_criterion_or_command(self):

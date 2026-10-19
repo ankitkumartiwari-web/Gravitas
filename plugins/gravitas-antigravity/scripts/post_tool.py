@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from session_context import session_dir_for_payload
-from evidence_chain import append_evidence
+from evidence_chain import append_evidence, resolution_links
 from gravitas_action import (
     READ_TOOLS,
     WRITE_TOOLS,
@@ -47,6 +47,21 @@ def append_jsonl(path: Path, entry: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def record_evidence(session_dir: Path, entry: dict) -> None:
+    """Append hook evidence without ever crashing the host hook contract.
+
+    Ledger durability failures are unrecoverable here, but the hook must
+    still answer `{}`; anchor-store failures are already downgraded to an
+    ``anchor_pending`` flag inside ``append_evidence`` (fail-closed at the
+    stop gate), so swallowing the residual ledger error only skips a
+    record the gate would have required anyway.
+    """
+    try:
+        append_evidence(session_dir, entry)
+    except (OSError, ValueError):
+        pass
 
 
 SECRET_PATTERNS = (
@@ -117,10 +132,11 @@ def main():
         target = target_file(tool_name, tool_input)
         if target:
             roots = workspace_roots(antigravity_envelope(payload)[0])
-            append_evidence(session_dir, {
+            record_evidence(session_dir, {
                 "source": "read",
                 "file": str(canonical_path(target, roots)),
                 "timestamp": timestamp,
+                "resolution_ids": resolution_links(session_dir, source="read", file=target),
                 **({"sensitive": True} if is_sensitive_path(target) else {}),
             })
 
@@ -148,7 +164,7 @@ def main():
         }.items() if any(term in command for term in terms)), None)
         if source:
             output_snippet = redact_text(tool_output)
-            append_evidence(session_dir, {
+            record_evidence(session_dir, {
                 "source": source,
                 "command": command,
                 "success": success,
@@ -163,7 +179,7 @@ def main():
             classification = classify_shell(command)
             if classification.get("mutation") in ("mutation", "destructive", "write"):
                 for path in classification.get("paths", []):
-                    append_evidence(session_dir, {
+                    record_evidence(session_dir, {
                         "source": "write",
                         "file": path,
                         "command": command,
@@ -174,7 +190,7 @@ def main():
     # Record file writes
     if tool_name in WRITE_TOOLS:
         target = tool_input.get("TargetFile", tool_input.get("target_file", ""))
-        append_evidence(session_dir, {
+        record_evidence(session_dir, {
             "source": "write",
             "file": target,
             "success": success,
